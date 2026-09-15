@@ -182,11 +182,20 @@ def detect_face_retinaface(ctx: Context):
 
 
 def detect_faces_yunet(image: np.ndarray):
-    """使用YuNet检测图片中的人脸并返回独立的检测结果。"""
+    """在大小两种尺度检测人脸，并统一返回输入图片上的坐标"""
     global YUNET_DETECTOR
 
     model_path, = get_model_files("yunet", "face_detection_yunet_2026may.onnx")
     image_height, image_width = image.shape[:2]
+    scale = min(1.0, 640.0 / max(image_height, image_width))
+    detect_image = image
+    if scale < 1.0:
+        detect_image = cv2.resize(
+            image,
+            (max(1, round(image_width * scale)), max(1, round(image_height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    detect_height, detect_width = detect_image.shape[:2]
 
     # FaceDetectorYN会保存输入尺寸，首次加载及每次修改尺寸都需要串行处理
     with YUNET_LOCK:
@@ -194,15 +203,37 @@ def detect_faces_yunet(image: np.ndarray):
             YUNET_DETECTOR = cv2.FaceDetectorYN.create(
                 model_path,
                 "",
-                (image_width, image_height),
+                (detect_width, detect_height),
                 0.8,
                 0.3,
                 5000,
             )
         else:
-            YUNET_DETECTOR.setInputSize((image_width, image_height))
-        _, faces = YUNET_DETECTOR.detect(image)
+            YUNET_DETECTOR.setInputSize((detect_width, detect_height))
+        _, faces = YUNET_DETECTOR.detect(detect_image)
         faces = None if faces is None else faces.copy()
+        if scale < 1.0:
+            # 人脸框和五点坐标按实际缩放尺寸还原，置信度保持原值
+            if faces is not None:
+                faces[:, [0, 2, 4, 6, 8, 10, 12]] *= image_width / detect_width
+                faces[:, [1, 3, 5, 7, 9, 11, 13]] *= image_height / detect_height
+
+            # 原尺寸保留远处小脸，合并两种尺度以免多人照片被误判为单人
+            YUNET_DETECTOR.setInputSize((image_width, image_height))
+            _, original_faces = YUNET_DETECTOR.detect(image)
+            if original_faces is not None:
+                if faces is None:
+                    faces = original_faces.copy()
+                else:
+                    faces = np.concatenate((faces, original_faces), axis=0)
+                    indices = cv2.dnn.NMSBoxes(
+                        faces[:, :4].tolist(),
+                        faces[:, 14].tolist(),
+                        0.8,
+                        0.3,
+                        top_k=5000,
+                    )
+                    faces = faces[np.asarray(indices, dtype=np.intp).reshape(-1)]
     return faces
 
 
