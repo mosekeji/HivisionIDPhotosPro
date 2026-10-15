@@ -52,6 +52,9 @@ def adjust_photo(ctx: Context):
         cut_image.astype(np.uint8), model=2, correction_factor=0
     )  # 得到 cut_image 中人像的上下左右距离信息
 
+    # 左右只裁掉共同的空白，保持人脸居中
+    x_left = x_right = min(x_left, x_right)
+
     # Step5. 判定 cut_image 中的人像是否处于合理的位置，若不合理，则处理数据以便之后调整位置
     # 检测人像与裁剪框左边或右边是否存在空隙
     if x_left > 0 or x_right > 0:

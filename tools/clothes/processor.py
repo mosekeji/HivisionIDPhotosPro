@@ -32,6 +32,7 @@ CLOTHES_PARSING_MODEL_OPTION = None
 CLOTHES_PARSING_LOCK = Lock()
 MIN_PERSON_SCALE = 0.88
 MAX_PERSON_SCALE = 1.15
+MIN_CLOTHES_DETAIL_WIDTH = 512
 
 
 def _load_clothes_calibrations() -> dict:
@@ -458,45 +459,6 @@ def _load_clothes_asset(category: int, clothes_id: int) -> tuple[np.ndarray, dic
     return clothes_image, _analyze_clothes(clothes_image)
 
 
-def _upscale_clothes(clothes_image: np.ndarray, target_width: int) -> np.ndarray:
-    """放大低分辨率服装并轻度恢复衣领边缘，不生成新的衣料纹理"""
-    upscale_width = max(clothes_image.shape[1], target_width * 2)
-    if upscale_width == clothes_image.shape[1]:
-        return clothes_image
-
-    upscale_height = round(
-        clothes_image.shape[0] * upscale_width / clothes_image.shape[1]
-    )
-    normalized = clothes_image.astype(np.float32) / 255.0
-    alpha = normalized[:, :, 3:4]
-    premultiplied_color = normalized[:, :, :3] * alpha
-    resized_color = cv2.resize(
-        premultiplied_color,
-        (upscale_width, upscale_height),
-        interpolation=cv2.INTER_LANCZOS4,
-    )
-    resized_alpha = cv2.resize(
-        alpha,
-        (upscale_width, upscale_height),
-        interpolation=cv2.INTER_LANCZOS4,
-    )[:, :, None]
-    blurred_color = cv2.GaussianBlur(resized_color, (0, 0), 0.7)
-    resized_color = np.clip(resized_color * 1.35 - blurred_color * 0.35, 0.0, 1.0)
-    straight_color = np.divide(
-        resized_color,
-        resized_alpha,
-        out=np.zeros_like(resized_color),
-        where=resized_alpha > 1e-4,
-    )
-    return np.uint8(
-        np.clip(
-            np.concatenate((straight_color, resized_alpha), axis=2) * 255.0,
-            0,
-            255,
-        )
-    )
-
-
 def _create_face_protection_mask(
     input_image: np.ndarray,
     face: np.ndarray,
@@ -609,6 +571,58 @@ def _fit_clothes_collar(
     return fitted_layer
 
 
+def _match_clothes_detail(
+    clothes_layer: np.ndarray,
+    input_image: np.ndarray,
+    face: np.ndarray,
+) -> np.ndarray:
+    """只对柔焦人像对应的高清服装减弱细节，保持人物图层不变"""
+    face_x, face_y, face_width, face_height = [float(value) for value in face[:4]]
+    face_image = input_image[
+        max(0, int(face_y)):min(input_image.shape[0], int(face_y + face_height)),
+        max(0, int(face_x)):min(input_image.shape[1], int(face_x + face_width)),
+        :3,
+    ]
+    gray = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.resize(
+        gray,
+        (128, round(128 * gray.shape[0] / gray.shape[1])),
+        interpolation=cv2.INTER_AREA if gray.shape[1] > 128 else cv2.INTER_CUBIC,
+    )
+    gray = cv2.GaussianBlur(gray, (0, 0), 0.8)
+    blurred_gray = cv2.GaussianBlur(gray, (0, 0), 1.2)
+    gradients = [
+        cv2.magnitude(
+            cv2.Scharr(image, cv2.CV_32F, 1, 0),
+            cv2.Scharr(image, cv2.CV_32F, 0, 1),
+        )
+        for image in (gray, blurred_gray)
+    ]
+    interior = np.zeros(gray.shape, dtype=bool)
+    interior[int(gray.shape[0] * 0.12):int(gray.shape[0] * 0.90), 20:108] = True
+    strong_edges = interior & (gradients[0] >= np.percentile(gradients[0][interior], 80))
+    edge_strength = float(gradients[0][strong_edges].sum())
+    if edge_strength <= strong_edges.sum():
+        return clothes_layer
+    detail = 1.0 - float(gradients[1][strong_edges].sum()) / edge_strength
+    if detail >= 0.16:
+        return clothes_layer
+    sigma = min(2.0, np.sqrt(4.0 * (0.16 / max(detail, 0.01) - 1.0)))
+    sigma *= face_width / 128.0
+    if sigma < 0.25:
+        return clothes_layer
+    normalized = clothes_layer.astype(np.float32) / 255.0
+    normalized[:, :, :3] *= normalized[:, :, 3:4]
+    blurred = cv2.GaussianBlur(normalized, (0, 0), sigma)
+    blurred[:, :, :3] = np.divide(
+        blurred[:, :, :3],
+        blurred[:, :, 3:4],
+        out=np.zeros_like(blurred[:, :, :3]),
+        where=blurred[:, :, 3:4] > 0,
+    )
+    return np.uint8(np.clip(blurred * 255.0, 0, 255))
+
+
 def _create_clothes_layer(
     input_image: np.ndarray,
     clothes_image: np.ndarray,
@@ -637,7 +651,6 @@ def _create_clothes_layer(
     source_scale = image_width / source_shoulder_span
     clothes_width = max(1, round(source_width * source_scale))
     clothes_height = max(1, round(source_height * source_scale))
-    clothes_image = _upscale_clothes(clothes_image, clothes_width)
     resized_clothes = _resize_bgra(clothes_image, clothes_width, clothes_height)
     source_scale = clothes_width / source_width
     clothes_left = round(center_x - source_shoulder_center_x * source_scale)
@@ -684,6 +697,8 @@ def _create_clothes_layer(
         neck_geometry,
         garment_geometry,
     )
+    if source_width >= MIN_CLOTHES_DETAIL_WIDTH:
+        clothes_layer = _match_clothes_detail(clothes_layer, input_image, face)
     return clothes_layer, garment_geometry
 
 
