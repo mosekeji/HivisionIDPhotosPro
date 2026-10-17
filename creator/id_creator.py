@@ -13,10 +13,10 @@ from .photo import photo_utils as U
 from .context import Context, ContextHandler, Params, Result
 from .matting.human_matting import extract_human_ppmattingv2
 from .face.face_detector import detect_face_yunet
+from .face.face_alignment import align_face
 from tools.exceptions import FaceError
 from tools.beauty.handler import beauty_face
 from .photo.photo_adjuster import adjust_photo
-import cv2
 import time
 
 
@@ -159,22 +159,11 @@ class IDCreator:
         self.after_detect and self.after_detect(ctx)
 
         # 3.1 ------------------人脸对齐------------------
-        if ctx.params.face_alignment and abs(ctx.face["roll_angle"]) > 2:
+        if ctx.params.face_alignment:
             print("[3.1]  Start Face Alignment...")
             start_alignment_time = time.time()
-            from tools.rotation import rotate_bound_4channels
-
-            # 根据角度旋转原图和抠图
-            b, g, r, a = cv2.split(ctx.matting_image)
-            ctx.origin_image, ctx.matting_image, _, _, _, _ = rotate_bound_4channels(
-                cv2.merge((b, g, r)),
-                a,
-                -1 * ctx.face["roll_angle"],
-            )
-
-            # 旋转后再执行一遍人脸检测
-            self.detection_handler(ctx)
-            self.after_detect and self.after_detect(ctx)
+            if align_face(ctx, self.detection_handler):
+                self.after_detect and self.after_detect(ctx)
             end_alignment_time = time.time()
             print(f"[3.1]  Face Alignment Time: {end_alignment_time - start_alignment_time:.3f}s")
 
