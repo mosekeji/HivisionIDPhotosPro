@@ -46,7 +46,8 @@ jobs:
 
   build:
     needs: sync
-    if: needs.sync.outputs.updated == 'true'
+    # 手动触发时无条件构建；定时触发时仅在检测到上游更新后构建
+    if: github.event_name == 'workflow_dispatch' || needs.sync.outputs.updated == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
