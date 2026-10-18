@@ -1,0 +1,11 @@
+services:
+  hivisionidphotos-pro:
+    build: .
+    image: hivisionidphotos-pro:latest
+    container_name: hivisionidphotos-pro
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    volumes:
+      # 离线模型目录：把下载好的模型放在宿主机 ./creator/models/<模型文件夹>/ 里
+      - ./creator/models:/app/creator/models
