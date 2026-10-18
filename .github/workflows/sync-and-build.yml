@@ -9,9 +9,15 @@ env:
   UPSTREAM_REPO: no1yu/HivisionIDPhotosPro
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/hivisionidphotospro
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       updated: ${{ steps.check.outputs.updated }}
     steps:
